@@ -1,10 +1,10 @@
 package props
 
 import (
+	"fmt"
+	"github.com/bjarneh/latinx"
 	"io"
 	"os"
-
-	"github.com/bjarneh/latinx"
 )
 
 type Props struct {
@@ -13,12 +13,13 @@ type Props struct {
 	Line map[string]int
 
 	state pState
-	lin int
-	key []byte
-	val []byte
+	lin   int
+	key   []byte
+	val   []byte
 }
 
 type pState int
+
 const (
 	NONE pState = iota
 	COMMENT
@@ -36,6 +37,17 @@ func New() *Props {
 		Data: make(map[string]string),
 		Line: make(map[string]int),
 	}
+}
+
+func (p *Props) String(key string) string {
+	return p.Data[key]
+}
+func (p *Props) Trace(key string) string {
+	line, ok := p.Line[key]
+	if ok {
+		return fmt.Sprintf("%s:%d", p.File, line)
+	}
+	return p.File
 }
 
 func (p *Props) ParseFile(file string) error {
