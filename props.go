@@ -22,12 +22,12 @@ type Props struct {
 type pState int
 
 const (
-	NONE pState = iota
-	COMMENT
-	KEY
-	KEY_POST // key terminated, haven't found : or = yet
-	VAL_LEAD // in whitespace we shouldn't include in the value
-	VAL
+	noneState pState = iota
+	commentState
+	keyState
+	keyPostState // key terminated, haven't found : or = yet
+	valLeadState // in whitespace we shouldn't include in the value
+	valState
 )
 
 func New() *Props {
@@ -57,7 +57,7 @@ func (p *Props) ParseFile(file string) error {
 
 	p.File = file
 
-	p.state = NONE
+	p.state = noneState
 	p.lin = 0
 
 	// java standard is ISO 8859-1 for properties files.
@@ -95,7 +95,7 @@ func (p *Props) consume(b byte) {
 	}
 
 	switch p.state {
-	case NONE:
+	case noneState:
 		if p.escape {
 			p.escape = false
 			if b == '\n' {
@@ -105,30 +105,30 @@ func (p *Props) consume(b byte) {
 				p.val = nil
 				b = unescape(b)
 				p.key = append(p.key, b)
-				p.state = KEY
+				p.state = keyState
 			}
 		} else {
 			switch b {
 			case ' ', '\t', '\f', '\n':
 			case '!', '#':
-				p.state = COMMENT
+				p.state = commentState
 			case '\\':
 				p.escape = true
 			default:
 				p.key = nil
 				p.val = nil
 				p.key = append(p.key, b)
-				p.state = KEY
+				p.state = keyState
 			}
 		}
 
-	case COMMENT:
+	case commentState:
 		switch b {
 		case '\n':
-			p.state = NONE
+			p.state = noneState
 		}
 
-	case KEY:
+	case keyState:
 		if p.escape {
 			p.escape = false
 			if b == '\n' {
@@ -140,12 +140,12 @@ func (p *Props) consume(b byte) {
 		} else {
 			switch b {
 			case ' ', '\t', '\f':
-				p.state = KEY_POST
+				p.state = keyPostState
 			case ':', '=':
-				p.state = VAL_LEAD
+				p.state = valLeadState
 			case '\n':
 				p.store()
-				p.state = NONE
+				p.state = noneState
 			case '\\':
 				p.escape = true
 			default:
@@ -153,61 +153,61 @@ func (p *Props) consume(b byte) {
 			}
 		}
 
-	case KEY_POST:
+	case keyPostState:
 		if p.escape {
 			p.escape = false
 			if b == '\n' {
-				p.state = VAL_LEAD
+				p.state = valLeadState
 			} else {
 				b = unescape(b)
 				p.val = append(p.val, b)
-				p.state = VAL
+				p.state = valState
 			}
 		} else {
 			switch b {
 			case ' ', '\t', '\f':
 			case ':', '=':
-				p.state = VAL_LEAD
+				p.state = valLeadState
 			case '\n':
 				p.store()
-				p.state = NONE
+				p.state = noneState
 			case '\\':
 				p.escape = true
 			default:
 				p.val = append(p.val, b)
-				p.state = VAL
+				p.state = valState
 			}
 		}
 
-	case VAL_LEAD:
+	case valLeadState:
 		if p.escape {
 			p.escape = false
 			if b == '\n' {
-				p.state = VAL_LEAD
+				p.state = valLeadState
 			} else {
 				b = unescape(b)
 				p.val = append(p.val, b)
-				p.state = VAL
+				p.state = valState
 			}
 		} else {
 			switch b {
 			case ' ', '\t', '\f':
 			case '\n':
 				p.store()
-				p.state = NONE
+				p.state = noneState
 			case '\\':
 				p.escape = true
 			default:
 				p.val = append(p.val, b)
-				p.state = VAL
+				p.state = valState
 			}
 		}
 
-	case VAL:
+	case valState:
 		if p.escape {
 			p.escape = false
 			if b == '\n' {
-				p.state = VAL_LEAD
+				p.state = valLeadState
 			} else {
 				b = unescape(b)
 				p.val = append(p.val, b)
@@ -216,7 +216,7 @@ func (p *Props) consume(b byte) {
 			switch b {
 			case '\n':
 				p.store()
-				p.state = NONE
+				p.state = noneState
 			case '\\':
 				p.escape = true
 			default:
