@@ -12,10 +12,11 @@ type Props struct {
 	Data map[string]string
 	Line map[string]int
 
-	state pState
-	lin   int
-	key   []byte
-	val   []byte
+	state  pState
+	escape bool
+	lin    int
+	key    []byte
+	val    []byte
 }
 
 type pState int
@@ -24,12 +25,9 @@ const (
 	NONE pState = iota
 	COMMENT
 	KEY
-	KEY_ESCAPE
-	PREVALUE
-	PREVALUE_WHITE
-	VALUE
-	VALUE_ESCAPE
-	VALUE_ESCAPE_WHITE
+	KEY_POST // key terminated, haven't found : or = yet
+	VAL_LEAD // in whitespace we shouldn't include in the value
+	VAL
 )
 
 func New() *Props {
@@ -42,7 +40,7 @@ func New() *Props {
 func (p *Props) String(key string) string {
 	return p.Data[key]
 }
-func (p *Props) Trace(key string) string {
+func (p *Props) Source(key string) string {
 	line, ok := p.Line[key]
 	if ok {
 		return fmt.Sprintf("%s:%d", p.File, line)
@@ -98,107 +96,155 @@ func (p *Props) consume(b byte) {
 
 	switch p.state {
 	case NONE:
-		switch b {
-		case ' ', '\t', '\n':
-		case '!', '#':
-			p.state = COMMENT
-		case '\\':
-			p.key = nil
-			p.val = nil
-			p.state = KEY_ESCAPE
-		default:
-			p.key = nil
-			p.val = nil
-			p.key = append(p.key, b)
-			p.state = KEY
+		if p.escape {
+			p.escape = false
+			if b == '\n' {
+				// do nothing, we haven't started a key yet
+			} else {
+				p.key = nil
+				p.val = nil
+				b = unescape(b)
+				p.key = append(p.key, b)
+				p.state = KEY
+			}
+		} else {
+			switch b {
+			case ' ', '\t', '\f', '\n':
+			case '!', '#':
+				p.state = COMMENT
+			case '\\':
+				p.escape = true
+			default:
+				p.key = nil
+				p.val = nil
+				p.key = append(p.key, b)
+				p.state = KEY
+			}
 		}
+
 	case COMMENT:
 		switch b {
 		case '\n':
 			p.state = NONE
 		}
-		return
+
 	case KEY:
-		switch b {
-		case ' ', '\t':
-			p.state = PREVALUE_WHITE
-		case ':', '=':
-			p.state = PREVALUE
-		case '\n':
-			p.store()
-			p.state = NONE
-		case '\\':
-			p.state = KEY_ESCAPE
-		default:
-			p.key = append(p.key, b)
-		}
-	case KEY_ESCAPE:
-		p.key = append(p.key, b)
-		p.state = KEY
-	case PREVALUE_WHITE:
-		switch b {
-		case ' ', '\t':
-		case ':', '=':
-			p.state = PREVALUE
-		case '\n':
-			p.store()
-			p.state = NONE
-		case '\\':
-			p.val = nil
-			p.state = VALUE_ESCAPE
-		default:
-			p.val = nil
-			p.val = append(p.val, b)
-			p.state = VALUE
-		}
-	case PREVALUE:
-		switch b {
-		case ' ', '\t':
-		case '\n':
-			p.store()
-			p.state = NONE
-		case '\\':
-			p.val = nil
-			p.state = VALUE_ESCAPE
-		default:
-			p.val = nil
-			p.val = append(p.val, b)
-			p.state = VALUE
-		}
-	case VALUE:
-		switch b {
-		case '\n':
-			p.store()
-			p.state = NONE
-		case '\\':
-			p.state = VALUE_ESCAPE
-		default:
-			p.val = append(p.val, b)
-		}
-	case VALUE_ESCAPE:
-		p.val = append(p.val, b)
-		if b == '\n' {
-			p.state = VALUE_ESCAPE_WHITE
+		if p.escape {
+			p.escape = false
+			if b == '\n' {
+				// keep reading as key
+			} else {
+				b = unescape(b)
+				p.key = append(p.key, b)
+			}
 		} else {
-			p.state = VALUE
+			switch b {
+			case ' ', '\t', '\f':
+				p.state = KEY_POST
+			case ':', '=':
+				p.state = VAL_LEAD
+			case '\n':
+				p.store()
+				p.state = NONE
+			case '\\':
+				p.escape = true
+			default:
+				p.key = append(p.key, b)
+			}
 		}
-	case VALUE_ESCAPE_WHITE:
-		switch b {
-		case ' ', '\t':
-		case '\n':
-			p.store()
-			p.state = NONE
-		case '\\':
-			p.state = VALUE_ESCAPE
-		default:
-			p.val = append(p.val, b)
-			p.state = VALUE
+
+	case KEY_POST:
+		if p.escape {
+			p.escape = false
+			if b == '\n' {
+				p.state = VAL_LEAD
+			} else {
+				b = unescape(b)
+				p.val = append(p.val, b)
+				p.state = VAL
+			}
+		} else {
+			switch b {
+			case ' ', '\t', '\f':
+			case ':', '=':
+				p.state = VAL_LEAD
+			case '\n':
+				p.store()
+				p.state = NONE
+			case '\\':
+				p.escape = true
+			default:
+				p.val = append(p.val, b)
+				p.state = VAL
+			}
 		}
+
+	case VAL_LEAD:
+		if p.escape {
+			p.escape = false
+			if b == '\n' {
+				p.state = VAL_LEAD
+			} else {
+				b = unescape(b)
+				p.val = append(p.val, b)
+				p.state = VAL
+			}
+		} else {
+			switch b {
+			case ' ', '\t', '\f':
+			case '\n':
+				p.store()
+				p.state = NONE
+			case '\\':
+				p.escape = true
+			default:
+				p.val = append(p.val, b)
+				p.state = VAL
+			}
+		}
+
+	case VAL:
+		if p.escape {
+			p.escape = false
+			if b == '\n' {
+				p.state = VAL_LEAD
+			} else {
+				b = unescape(b)
+				p.val = append(p.val, b)
+			}
+		} else {
+			switch b {
+			case '\n':
+				p.store()
+				p.state = NONE
+			case '\\':
+				p.escape = true
+			default:
+				p.val = append(p.val, b)
+			}
+		}
+	}
+}
+
+func unescape(b byte) byte {
+	switch b {
+	case 'r':
+		return '\r'
+	case 'n':
+		return '\n'
+	case 't':
+		return '\t'
+	case 'f':
+		return '\f'
+	default:
+		return b
 	}
 }
 
 func (p *Props) store() {
 	k := string(p.key)
-	p.Data[k] = string(p.val)
-	p.Line[k] = p.lin
+	if k != "" {
+		p.Data[k] = string(p.val)
+		p.Line[k] = p.lin
+	}
 }
