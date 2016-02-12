@@ -1,6 +1,7 @@
 # props
 Golang parser and emitter for java .properties files
 
+API is crappy and will change soon. Docs at https://godoc.org/github.com/yobert/props
 
 Following the rules specified at http://docs.oracle.com/javase/7/docs/api/java/util/Properties.html
 
