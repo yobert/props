@@ -1,22 +1,29 @@
 package props
 
 import (
-	"fmt"
+	"errors"
 	"github.com/bjarneh/latinx"
 	"io"
 	"os"
 )
 
-type Props struct {
-	File string
-	Data map[string]string
-	Line map[string]int
+var errDecoderClosed = errors.New("Decode() on closed decoder")
 
-	state  pState
-	escape bool
-	lin    int
-	key    []byte
-	val    []byte
+type Decoder struct {
+	r io.Reader
+
+	filename string
+	state    pState
+	escape   bool
+	lin      int
+	key      []byte
+	val      []byte
+	cc       chan cce
+	cq       chan struct{}
+}
+type cce struct {
+	chunk *Chunk
+	err   error
 }
 
 type pState int
@@ -30,64 +37,105 @@ const (
 	valState
 )
 
-func New() *Props {
-	return &Props{
-		Data: make(map[string]string),
-		Line: make(map[string]int),
-	}
+type Encoder struct {
+	w io.Writer
 }
 
-func (p *Props) String(key string) string {
-	return p.Data[key]
-}
-func (p *Props) Source(key string) string {
-	line, ok := p.Line[key]
-	if ok {
-		return fmt.Sprintf("%s:%d", p.File, line)
-	}
-	return p.File
+// Chunk holds one key/value pair, for both encoding and decoding.
+// if Key is the empty string, Value holds either whitespace or a comment.
+type Chunk struct {
+	Key        string
+	Value      string
+	SourceLine int
 }
 
-func (p *Props) ParseFile(file string) error {
-	f, err := os.Open(file)
+type Map map[string]*Chunk
+
+func NewDecoder(r io.Reader) *Decoder {
+	return &Decoder{r: r, state: noneState}
+}
+
+func NewEncoder(w io.Writer) *Encoder {
+	return &Encoder{w}
+}
+
+func DecodeFile(path string) (Map, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer fh.Close()
+
+	m := make(Map)
+	d := NewDecoder(fh)
+	d.filename = path
+	for {
+		chunk, err := d.Decode()
+		if chunk == nil {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if chunk.Key != "" {
+			m[chunk.Key] = chunk
+		}
+	}
+	return m, nil
+}
+
+func EncodeFile(path string, data Map) error {
+	fh, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer fh.Close()
 
-	p.File = file
-
-	p.state = noneState
-	p.lin = 0
-
-	// java standard is ISO 8859-1 for properties files.
-	// it's dumb but whatever.
-
-	r := latinx.NewReader(latinx.ISO_8859_1, f)
-
-	return p.parse(r)
-}
-
-func (p *Props) parse(r io.Reader) error { // parse assumes utf8 coming in
-	buf := make([]byte, 1024)
-
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			for _, b := range buf[:n] {
-				p.consume(b)
-			}
-		}
-		if err == io.EOF {
-			return nil
-		} else if err != nil {
+	e := NewEncoder(fh)
+	for _, c := range data {
+		err := e.Encode(c)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (p *Props) consume(b byte) {
+func (p *Decoder) Decode() (*Chunk, error) {
+	if p.cc == nil {
+		p.cc = make(chan cce)
+		p.cq = make(chan struct{})
+		go func() {
+			// java standard is ISO 8859-1 for properties files.
+			// it's dumb but whatever.
+			r := latinx.NewReader(latinx.ISO_8859_1, p.r)
+
+			buf := make([]byte, 1024)
+
+			for {
+				n, err := r.Read(buf)
+				if n > 0 {
+					for _, b := range buf[:n] {
+						p.consume(b)
+					}
+				} else if err != nil {
+					p.cc <- cce{nil, err}
+					return
+				}
+			}
+		}()
+	}
+	c, ok := <-p.cc
+	if !ok {
+		return nil, errDecoderClosed
+	}
+	if c.err == io.EOF {
+		return nil, nil
+	}
+	return c.chunk, c.err
+}
+
+func (p *Decoder) consume(b byte) {
 	if b == '\n' {
 		p.lin++
 	} else if b == '\r' {
@@ -241,10 +289,11 @@ func unescape(b byte) byte {
 	}
 }
 
-func (p *Props) store() {
-	k := string(p.key)
-	if k != "" {
-		p.Data[k] = string(p.val)
-		p.Line[k] = p.lin
+func (p *Decoder) store() {
+	chunk := Chunk{
+		Key:        string(p.key),
+		Value:      string(p.val),
+		SourceLine: p.lin,
 	}
+	p.cc <- cce{&chunk, nil}
 }

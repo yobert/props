@@ -2,7 +2,6 @@ package props
 
 import (
 	"io"
-	//"fmt"
 )
 
 var escapes = map[uint8][]byte{
@@ -47,19 +46,24 @@ again:
 	return nil
 }
 
-func WriteTo(w io.Writer, k, v string) error {
-	err := write_escaped(w, k)
+func (e *Encoder) Encode(c *Chunk) error {
+	if c.Key == "" {
+		_, err := e.w.Write([]byte(c.Value))
+		return err
+	}
+
+	err := write_escaped(e.w, c.Key)
 	if err != nil {
 		return err
 	}
-	err = write_escaped(w, "=")
+	err = write_escaped(e.w, "=")
 	if err != nil {
 		return err
 	}
-	err = write_escaped(w, v)
+	err = write_escaped(e.w, c.Value)
 	if err != nil {
 		return err
 	}
-	_, err = w.Write([]byte("\n"))
+	_, err = e.w.Write([]byte("\n"))
 	return err
 }
